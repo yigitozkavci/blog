@@ -1,0 +1,288 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"
+    xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>Yigit's Blog</title>
+        <link>https://yigitozkavci.github.io/blog</link>
+        <description><![CDATA[Stuff about Haskell]]></description>
+        <atom:link href="https://yigitozkavci.github.io/blog/rss.xml" rel="self"
+                   type="application/rss+xml" />
+        <lastBuildDate>Mon, 16 Jul 2018 00:00:00 UT</lastBuildDate>
+        <item>
+    <title>Type safe xpath selectors by generating compile-time constraints</title>
+    <link>https://yigitozkavci.github.io/blog/posts/2018-07-16-type-safe-xpath-selectors.html</link>
+    <description><![CDATA[<article>
+    <section class="header">
+        Posted on July 16, 2018
+        
+            by Yiğit Özkavcı
+        
+    </section>
+    <section>
+        <p>In <a href="http://picussecurity.com/">Picus Security</a>, we use the <a href="https://hackage.haskell.org/package/webdriver">webdriver</a> library extensively for our Selenium end-to-end tests. The library itself is very convenient in terms of user API, but when it comes to actually debugging end to end test code, things aren’t quite smooth compared to just writing the tests.</p>
+<p>The fact that Selenium needs to be told a timeout for failure cases makes it really hard to debug end to end tests, because we just need to stare at the screen for 1 minute / 5 minutes and wait for Selenium to show us the result of the test. This arises the question: can we actually make sure that our <strong>XPaths</strong> and <strong>actions</strong> make sense?</p>
+<p>I’ve been working on a more strict version of <a href="https://hackage.haskell.org/package/webdriver">webdriver</a>, <a href="https://github.com/yigitozkavci/typed-webdriver">typed-webdriver</a>. It leverages TemplateHaskell to convert your xpath strings to well-kinded versions with associated capabilities, then it carries this information with constraints to other functions. This is quite confusing, so let’s jump to an example:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE DataKinds       #-}</span>
+<span class="ot">{-# LANGUAGE TemplateHaskell #-}</span>
+
+<span class="kw">import </span><span class="dt">Test.TWebDriver.Commands</span> (<span class="dt">Capability</span> (..), <span class="dt">Selector</span> (..), <span class="dt">WD</span>,
+                                 click, findElem, mkXPath)
+
+<span class="co">-- 1) Typechecks, because we try to click to a element of type link.</span>
+<span class="ot">myS ::</span> <span class="dt">WD</span> ()
+myS <span class="fu">=</span> click <span class="fu">=&lt;&lt;</span> myFindElem <span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::a[contains(text(), &#39;wow&#39;)]&quot;</span>)</code></pre></div>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- 2) Does not compile, because we try to click to a span element, which should not be clickable.</span>
+<span class="ot">myS ::</span> <span class="dt">WD</span> ()
+myS <span class="fu">=</span> click <span class="fu">=&lt;&lt;</span> myFindElem <span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::span[contains(text(), &#39;wow&#39;)]&quot;</span>)
+<span class="co">{-</span>
+<span class="co">  TypeError:</span>
+<span class="co">  The following XPath is not clickable:</span>
+<span class="co">  //a/button/descendant::span[contains(text(), &#39;wow&#39;)]</span>
+<span class="co">-}</span></code></pre></div>
+<p>If you are unfamiliar to XPath, here is what is happening:</p>
+<ul>
+<li><p>In case 1), we target an element like <code>&lt;span&gt;&lt;button&gt;&lt;a&gt;wowo&lt;/a&gt;&lt;/button&gt;&lt;/span&gt;</code>. Since an element with tag <code>a</code> is clickable, we allow calling <code>click</code> on <strong>elements found by this xpath</strong>.</p></li>
+<li><p>In the case 2), however, we are targeting a <code>span</code> character and we very well know that we are not supposed to click on elements of tag <code>span</code>, hence we reject this code in compile-time. But… how?</p></li>
+</ul>
+<p>In order to reject a code in compile-time, we need to somehow make constraints and type-level assertions. One way to do this is to use a type-list of capabilities that a XPath selector has.</p>
+<p>An example of what we produce in a call to <code>mkXPath</code>:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="fu">&gt;</span> <span class="fu">:</span>set <span class="fu">-</span><span class="dt">XTemplateHaskell</span>
+<span class="fu">&gt;</span> <span class="fu">:</span>set <span class="fu">-</span><span class="dt">XDataKinds</span>
+<span class="fu">&gt;</span> <span class="kw">import </span><span class="dt">Language.Haskell.TH</span>
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="fu">:</span>t <span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::a[contains(text(), &#39;wow&#39;)]&quot;</span>)
+<span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::a[contains(text(), &#39;wow&#39;)]&quot;</span>)
+<span class="ot">  ::</span> <span class="dt">Selector</span>
+       <span class="st">&quot;//span/button/descendant::a[contains(text(), &#39;wow&#39;)]&quot;</span>
+       <span class="ch">&#39;[&#39;</span><span class="dt">Clickable</span>, <span class="ch">&#39;ContainsText]</span></code></pre></div>
+<p>TemplateHaskell has its own constructors for Haskell types, values, functions, instances etc. And it’s very hard to try to memorize every construction, so we simply use the repl and type:</p>
+<pre><code>&gt; runQ [e|Selector :: Selector &quot;yigit&quot;|]
+SigE
+  (ConE Test.TWebDriver.Commands.Selector)
+  (AppT (ConT Test.TWebDriver.Commands.Selector) (LitT (StrTyLit &quot;yigit&quot;)))</code></pre>
+<p>We cannot use this quasi quotation everywhere, but it still helps us understand how TemplateHaskell constructs values.</p>
+<p>And here is the definition of <code>mkXPath</code>:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">mkXPath ::</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Q</span> <span class="dt">Exp</span>
+mkXPath name <span class="fu">=</span> <span class="kw">do</span>
+  promotedTySig <span class="ot">&lt;-</span> toPromotedTH (generateCapabilities name)
+  pure <span class="fu">$</span>
+    <span class="dt">SigE</span>
+      (<span class="dt">ConE</span> (mkName <span class="st">&quot;Selector&quot;</span>))
+      (<span class="dt">AppT</span>
+        (<span class="dt">AppT</span>
+          (<span class="dt">ConT</span> (mkName <span class="st">&quot;Selector&quot;</span>))
+          (<span class="dt">LitT</span> (<span class="dt">StrTyLit</span> name))
+        )
+        promotedTySig
+      )
+
+<span class="ot">toPromotedTH ::</span> <span class="dt">Either</span> <span class="dt">String</span> [<span class="dt">Capability</span>] <span class="ot">-&gt;</span> <span class="dt">Q</span> <span class="dt">Type</span>
+toPromotedTH (<span class="dt">Left</span> err) <span class="fu">=</span> reportError err <span class="fu">$&gt;</span> <span class="dt">PromotedNilT</span>
+toPromotedTH (<span class="dt">Right</span> []) <span class="fu">=</span> pure <span class="dt">PromotedNilT</span>
+toPromotedTH (<span class="dt">Right</span> (cap<span class="fu">:</span>xs)) <span class="fu">=</span> <span class="kw">do</span>
+  deeper <span class="ot">&lt;-</span> toPromotedTH (<span class="dt">Right</span> xs)
+  pure <span class="fu">$</span>
+    <span class="dt">AppT</span>
+      (<span class="dt">AppT</span>
+        <span class="dt">PromotedConsT</span>
+        (<span class="dt">PromotedT</span> (mkName (show cap)))
+      )
+      deeper</code></pre></div>
+<p>So we basically create a type-level string for consuming xpath in “sending to Selenium” process, and also a list of capabilities this XPath has.</p>
+<p>After creating our qualified selector, we need to be able to find elements with it:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE DataKinds             #-}</span>
+<span class="ot">{-# LANGUAGE KindSignatures        #-}</span>
+<span class="ot">{-# LANGUAGE MultiParamTypeClasses #-}</span>
+<span class="ot">{-# LANGUAGE RankNTypes            #-}</span>
+<span class="ot">{-# LANGUAGE ScopedTypeVariables   #-}</span>
+
+<span class="kw">import qualified</span> <span class="dt">Test.WebDriver.Commands</span>    <span class="kw">as</span> <span class="dt">WDM</span>
+<span class="kw">import qualified</span> <span class="dt">Test.WebDriver.Monad</span>       <span class="kw">as</span> <span class="dt">WDM</span>
+<span class="kw">import           </span><span class="dt">GHC.TypeLits</span>               (<span class="dt">KnownSymbol</span>, <span class="dt">Symbol</span>, symbolVal)
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span>                  <span class="kw">as</span> <span class="dt">T</span>
+
+findElem
+<span class="ot">  ::</span> forall name cap<span class="fu">.</span> <span class="dt">KnownSymbol</span> name
+  <span class="ot">=&gt;</span> <span class="dt">Selector</span> name cap
+  <span class="ot">-&gt;</span> <span class="dt">WDM.WD</span> (<span class="dt">Element</span> name cap)
+findElem <span class="dt">Selector</span> <span class="fu">=</span> fmap <span class="dt">Element</span>
+                  <span class="fu">$</span> WDM.findElem
+                  <span class="fu">$</span> <span class="dt">WDM.ByXPath</span>
+                  <span class="fu">$</span> T.pack
+                  <span class="fu">$</span> symbolVal (<span class="dt">Proxy</span><span class="ot"> ::</span> <span class="dt">Proxy</span> name)</code></pre></div>
+<p>The capabilities we have at type level are used by several library functions. For instance, let’s take a look at the signature of click function:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Capability</span> <span class="fu">=</span>
+    <span class="dt">Clickable</span>
+  <span class="fu">|</span> <span class="dt">Hoverable</span>
+  <span class="fu">|</span> <span class="dt">ContainsText</span>
+  <span class="kw">deriving</span> <span class="dt">Show</span>
+
+<span class="kw">type</span> family <span class="dt">XPathNotClickableError</span> (<span class="ot">name ::</span> <span class="dt">Symbol</span>)<span class="ot"> ::</span> b <span class="kw">where</span>
+  <span class="dt">XPathNotClickableError</span> name <span class="fu">=</span>
+    <span class="dt">TypeError</span> ( <span class="ch">&#39;Text &quot;The following XPath is not clickable: &quot;</span>
+          <span class="ch">&#39;:$$: &#39;</span><span class="dt">Text</span> name
+    )
+
+<span class="kw">type</span> family <span class="dt">CanClick</span> (<span class="ot">name ::</span> <span class="dt">Symbol</span>) (<span class="ot">xs ::</span> [<span class="dt">Capability</span>])<span class="ot"> ::</span> <span class="dt">Constraint</span> <span class="kw">where</span>
+  <span class="dt">CanClick</span> name <span class="ch">&#39;[] = XPathNotClickableError name</span>
+  <span class="dt">CanClick</span> _ (<span class="ch">&#39;Clickable &#39;</span><span class="fu">:</span> xs) <span class="fu">=</span> ()
+  <span class="dt">CanClick</span> name (x <span class="ch">&#39;: xs) = CanClick name xs</span>
+
+<span class="ot">click ::</span> forall name xs<span class="fu">.</span> <span class="dt">CanClick</span> name xs <span class="ot">=&gt;</span> <span class="dt">Element</span> name xs <span class="ot">-&gt;</span> <span class="dt">WDM.WD</span> ()
+click <span class="fu">=</span> WDM.click <span class="fu">.</span> unElement</code></pre></div>
+<p>This way, after encoding necessary capabilities in a Selector’s type, we can observe what actions can be taken with this selector thgouhgout the journey of compilation.</p>
+<p>This library is still in being developed, and not meant to be used in production yet.</p>
+<p>The purpose of this blog post is to demonstrate how we can leverage lightweight usage of TemplateHaskell to generate compile-time constraints for us via regular Haskell expressions.</p>
+<p>Cheers.</p>
+    </section>
+</article>
+]]></description>
+    <pubDate>Mon, 16 Jul 2018 00:00:00 UT</pubDate>
+    <guid>https://yigitozkavci.github.io/blog/posts/2018-07-16-type-safe-xpath-selectors.html</guid>
+    <dc:creator>Yiğit Özkavcı</dc:creator>
+</item>
+<item>
+    <title>Jumping through instructions with RecursiveDo</title>
+    <link>https://yigitozkavci.github.io/blog/posts/2018-06-11-recursive-do-jump.html</link>
+    <description><![CDATA[<article>
+    <section class="header">
+        Posted on June 11, 2018
+        
+            by Yiğit Özkavcı
+        
+    </section>
+    <section>
+        <p>When we read a program written in any programming language, we implicitly assume that the state flows in the direction we read the code, at least inside functions. I had my mind blown when I first saw the <code>RevState</code> and <code>Tardis</code> monads; they break our assumption on the direction of the state flow. Since they are already interesting enough for one to dig deep into, in this post I won’t focus on them, instead, I will talk about an interesting real-world problem I encountered, and a solution that involves depending on a future value.</p>
+<p>First, I will describe the problem of jumping through instructions, and then I will develop several solutions for it. The reader is assumed to have some basic familiarity with Haskell, at least up to a basic understanding of monads.</p>
+<p>Imagine a simple virtual machine managed by a stack and memory. Let <code>u</code> denote the stack, and <code>u[i]</code> denote the ith element from the top in the stack. Consider having 6 kinds of instructions:</p>
+<div class="sourceCode"><pre class="sourceCode bash"><code class="sourceCode bash"><span class="co"># Push the given element into the stack so that u[0] = val</span>
+<span class="co"># and all other values are pushed one level downwards</span>
+<span class="ex">PUSH</span> val
+
+<span class="co"># Add u[0] and u[1] then pop both of them and push the</span>
+<span class="co"># result into the stack</span>
+<span class="ex">ADD</span>
+
+<span class="co"># Test and jump: jump to destination u[0] if (u[1] != 0)</span>
+<span class="co"># and pop two elements from the stack</span>
+<span class="ex">JUMPI</span>
+
+<span class="co"># Apply not unary operator to the value u[0]</span>
+<span class="co"># So if (u[0] == 1) before, now (u[0] == 0) and vice versa</span>
+<span class="ex">NOT</span>
+
+<span class="co"># Store the value u[0] into the address u[1]</span>
+<span class="co"># and pop two elements from the stack</span>
+<span class="ex">STORE</span>
+
+<span class="co"># Marks a valid jump destination. All jumps</span>
+<span class="co"># should be made onto a JUMPDEST instruction</span>
+<span class="ex">JUMPDEST</span></code></pre></div>
+<p>So if we were to convert an if statement to instructions;</p>
+<div class="sourceCode"><pre class="sourceCode c"><code class="sourceCode c"><span class="cf">if</span>(predicate) {
+  a = <span class="dv">3</span> + <span class="dv">5</span>;
+}</code></pre></div>
+<p>We would end up with the program below:</p>
+<div class="sourceCode"><pre class="sourceCode bash"><code class="sourceCode bash"><span class="ex">1</span> PUSH predicate <span class="co"># Push if&#39;s condition expression</span>
+<span class="ex">2</span> NOT <span class="co"># We will jump outside of if&#39;s body if the condition is NOT true</span>
+<span class="ex">3</span> PUSH 10
+<span class="ex">4</span> JUMPI
+<span class="ex">5</span> PUSH 0xf4 <span class="co"># Arbitrary address for variable &quot;a&quot;</span>
+<span class="ex">6</span> PUSH 5
+<span class="ex">7</span> PUSH 3
+<span class="ex">8</span> ADD
+<span class="ex">9</span> STORE
+<span class="ex">10</span> JUMPDEST <span class="co"># If statement&#39;s body is completed</span></code></pre></div>
+<p>If we represent this computation in Haskell, it would look something like the following:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">module</span> <span class="dt">Main</span> <span class="kw">where</span>
+
+<span class="kw">import           </span><span class="dt">Control.Monad.Trans.State</span>
+<span class="kw">import           </span><span class="dt">Data.Monoid</span> ((&lt;&gt;))
+
+<span class="kw">data</span> <span class="dt">Instruction</span> <span class="fu">=</span>
+    <span class="dt">NOT</span>
+  <span class="fu">|</span> <span class="dt">PUSH</span> <span class="dt">Int</span>
+  <span class="fu">|</span> <span class="dt">ADD</span>
+  <span class="fu">|</span> <span class="dt">JUMPI</span>
+  <span class="fu">|</span> <span class="dt">STORE</span>
+  <span class="fu">|</span> <span class="dt">JUMPDEST</span>
+  <span class="kw">deriving</span> (<span class="dt">Show</span>, <span class="dt">Eq</span>)
+
+<span class="kw">type</span> <span class="dt">InstructionSet</span> <span class="fu">=</span> [<span class="dt">Instruction</span>]
+
+<span class="kw">data</span> <span class="dt">InstrState</span> <span class="fu">=</span> <span class="dt">InstrState</span>
+  {<span class="ot"> _instrSet ::</span> <span class="dt">InstructionSet</span>
+  ,<span class="ot"> _pc       ::</span> <span class="dt">Int</span>
+  } <span class="kw">deriving</span> <span class="dt">Show</span>
+
+<span class="ot">op ::</span> <span class="dt">Instruction</span> <span class="ot">-&gt;</span> <span class="dt">State</span> <span class="dt">InstrState</span> ()
+op instr <span class="fu">=</span>
+  modify <span class="fu">$</span> \(<span class="dt">InstrState</span> set pc) <span class="ot">-&gt;</span> <span class="dt">InstrState</span> (set <span class="fu">&lt;&gt;</span> [instr]) (pc <span class="fu">+</span> <span class="dv">1</span>)
+
+<span class="ot">ifBlock ::</span> <span class="dt">State</span> <span class="dt">InstrState</span> ()
+ifBlock <span class="fu">=</span> <span class="kw">do</span>
+  op (<span class="dt">PUSH</span> <span class="bn">0xf4</span>) <span class="co">-- An arbitrary address for variable a</span>
+  op (<span class="dt">PUSH</span> <span class="dv">5</span>)
+  op (<span class="dt">PUSH</span> <span class="dv">3</span>)
+  op <span class="dt">ADD</span>
+  op <span class="dt">STORE</span>
+
+<span class="ot">compute ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">State</span> <span class="dt">InstrState</span> ()
+compute predicate <span class="fu">=</span> <span class="kw">do</span>
+  op (<span class="dt">PUSH</span> predicate)
+  op <span class="dt">NOT</span>
+  op (<span class="dt">PUSH</span> <span class="dv">10</span>)
+  op <span class="dt">JUMPI</span>
+  ifBlock
+  op <span class="dt">JUMPDEST</span>
+
+<span class="ot">main ::</span> <span class="dt">IO</span> ()
+main <span class="fu">=</span> print <span class="fu">$</span> _instrSet <span class="fu">$</span> execState (compute <span class="dv">1</span>) (<span class="dt">InstrState</span> [] <span class="dv">0</span>)
+<span class="co">-- Output:</span>
+<span class="co">-- [PUSH 1,NOT,PUSH 10,JUMPI,PUSH 244,PUSH 5,PUSH 3,ADD,STORE,JUMPDEST]</span></code></pre></div>
+<p>You may already have noticed that at instruction number 3, we’ve pushed 10; it’s nice to directly jump to your destination, but how did we know we had to jump to PC 10? The problem with this solution is that we need to know that we need to push 10 into stack before we know the total cost of theif statement’s body.</p>
+<p>Even if in this case if statement’s body cost does not change, in the real world scenario it does according to the state of the variables &amp; lexical scope of the statement. One pattern to observe is that in some places, we implicitly depend on some future computation, which is <code>ifBlock</code> in this case. We need to somehow be able to say “give me the destination, but I don’t know its value yet, it will be computed later so wait for it”.</p>
+<p>We could achieve this behavior within pure contexts thanks to let bindings in Haskell being lazy and recursive, but here, we are inside a monadic context under State monad. The correspondent of this lazy behavior for effectful computations is rec enabled by the <code>RecursiveDo</code> extension (you can develop an intuition for it <a href="https://ocharles.org.uk/blog/posts/2014-12-09-recursive-do.html">here</a>). So we modify our compute function to calculate jump destination before it arrives at that location:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE RecursiveDo #-}</span>
+<span class="fu">...</span>
+<span class="ot">jumpdest ::</span> <span class="dt">State</span> <span class="dt">InstrState</span> <span class="dt">Int</span>
+jumpdest <span class="fu">=</span> <span class="kw">do</span>
+  op <span class="dt">JUMPDEST</span>
+  _pc <span class="fu">&lt;$&gt;</span> get
+
+<span class="ot">compute ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">State</span> <span class="dt">InstrState</span> ()
+compute predicate <span class="fu">=</span> <span class="kw">do</span>
+  op (<span class="dt">PUSH</span> predicate)
+  op <span class="dt">NOT</span>
+  rec op (<span class="dt">PUSH</span> dest)
+      op <span class="dt">JUMPI</span>
+      ifBlock
+      dest <span class="ot">&lt;-</span> jumpdest
+  pure ()
+<span class="fu">...</span></code></pre></div>
+<p>Thanks to lazy evaluation, <code>RecursiveDo</code> extension lets us declare that we want to use some value, but not necessarily compute it right now; most importantly, does it while preserving the effect order. This is important because even in our small use-case, we need the proper ordering of instructions.</p>
+<p>There is a drawback here, though. If we were to care for optimization here, we would want our values to be strictly evaluated at the time we construct the instructions. You cannot simply strictly evaluate the destination value, so if we do the following change to <code>PUSH</code> constructor in order to force it to evaluate the Int value it takes right at construction time:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Instruction</span> <span class="fu">=</span>
+<span class="fu">...</span>
+ <span class="fu">|</span> <span class="dt">PUSH</span> <span class="fu">!</span><span class="dt">Int</span>
+<span class="fu">...</span> </code></pre></div>
+<p>… nothing changes! Why? Let’s look at the definition of op function. It takes the instruction as an argument, but it’s a thunk at that time. Haskell does not evaluate the <code>PUSH !Int</code>, so it cannot evaluate <code>!Int</code> part at all! In order to observe what happens in the case of strict evaluation, we need the strictness operator also on instr parameter of <code>op</code> function. Remember that <code>BangPatterns</code> extension is required for this task:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE BangPatterns #-}</span>
+<span class="fu">...</span>
+<span class="ot">op ::</span> <span class="dt">Instruction</span> <span class="ot">-&gt;</span> <span class="dt">State</span> <span class="dt">InstrState</span> ()
+op <span class="fu">!</span>instr <span class="fu">=</span>
+ modify <span class="fu">$</span> \(<span class="dt">InstrState</span> set pc) <span class="ot">-&gt;</span> <span class="dt">InstrState</span> (set <span class="fu">&lt;&gt;</span> [instr]) (pc <span class="fu">+</span> <span class="dv">1</span>)
+<span class="fu">...</span>
+<span class="co">-- Output:</span>
+<span class="co">-- &lt;&lt;infinite loop&gt;&gt;</span></code></pre></div>
+<p>So we have our infinite loop. This concludes the post.</p>
+    </section>
+</article>
+]]></description>
+    <pubDate>Mon, 11 Jun 2018 00:00:00 UT</pubDate>
+    <guid>https://yigitozkavci.github.io/blog/posts/2018-06-11-recursive-do-jump.html</guid>
+    <dc:creator>Yiğit Özkavcı</dc:creator>
+</item>
+
+    </channel>
+</rss>
