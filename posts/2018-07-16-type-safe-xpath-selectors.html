@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="x-ua-compatible" content="ie=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>My Hakyll Blog - Type safe xpath selectors by generating compile-time constraints</title>
+        <link rel="stylesheet" href="../css/default.css" />
+        <link rel="stylesheet" href="../css/syntax.css" />
+    </head>
+    <body>
+        <header>
+            <div class="logo">
+                <a href="../">Yiğit Özkavcı</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../contact.html">Contact</a>
+                <a href="../archive.html">Archive</a>
+            </nav>
+        </header>
+
+        <main role="main">
+            <h1>Type safe xpath selectors by generating compile-time constraints</h1>
+            <article>
+    <section class="header">
+        Posted on July 16, 2018
+        
+            by Yiğit Özkavcı
+        
+    </section>
+    <section>
+        <p>In <a href="http://picussecurity.com/">Picus Security</a>, we use the <a href="https://hackage.haskell.org/package/webdriver">webdriver</a> library extensively for our Selenium end-to-end tests. The library itself is very convenient in terms of user API, but when it comes to actually debugging end to end test code, things aren’t quite smooth compared to just writing the tests.</p>
+<p>The fact that Selenium needs to be told a timeout for failure cases makes it really hard to debug end to end tests, because we just need to stare at the screen for 1 minute / 5 minutes and wait for Selenium to show us the result of the test. This arises the question: can we actually make sure that our <strong>XPaths</strong> and <strong>actions</strong> make sense?</p>
+<p>I’ve been working on a more strict version of <a href="https://hackage.haskell.org/package/webdriver">webdriver</a>, <a href="https://github.com/yigitozkavci/typed-webdriver">typed-webdriver</a>. It leverages TemplateHaskell to convert your xpath strings to well-kinded versions with associated capabilities, then it carries this information with constraints to other functions. This is quite confusing, so let’s jump to an example:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE DataKinds       #-}</span>
+<span class="ot">{-# LANGUAGE TemplateHaskell #-}</span>
+
+<span class="kw">import </span><span class="dt">Test.TWebDriver.Commands</span> (<span class="dt">Capability</span> (..), <span class="dt">Selector</span> (..), <span class="dt">WD</span>,
+                                 click, findElem, mkXPath)
+
+<span class="co">-- 1) Typechecks, because we try to click to a element of type link.</span>
+<span class="ot">myS ::</span> <span class="dt">WD</span> ()
+myS <span class="fu">=</span> click <span class="fu">=&lt;&lt;</span> myFindElem <span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::a[contains(text(), 'wow')]&quot;</span>)</code></pre></div>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- 2) Does not compile, because we try to click to a span element, which should not be clickable.</span>
+<span class="ot">myS ::</span> <span class="dt">WD</span> ()
+myS <span class="fu">=</span> click <span class="fu">=&lt;&lt;</span> myFindElem <span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::span[contains(text(), 'wow')]&quot;</span>)
+<span class="co">{-</span>
+<span class="co">  TypeError:</span>
+<span class="co">  The following XPath is not clickable:</span>
+<span class="co">  //a/button/descendant::span[contains(text(), 'wow')]</span>
+<span class="co">-}</span></code></pre></div>
+<p>If you are unfamiliar to XPath, here is what is happening:</p>
+<ul>
+<li><p>In case 1), we target an element like <code>&lt;span&gt;&lt;button&gt;&lt;a&gt;wowo&lt;/a&gt;&lt;/button&gt;&lt;/span&gt;</code>. Since an element with tag <code>a</code> is clickable, we allow calling <code>click</code> on <strong>elements found by this xpath</strong>.</p></li>
+<li><p>In the case 2), however, we are targeting a <code>span</code> character and we very well know that we are not supposed to click on elements of tag <code>span</code>, hence we reject this code in compile-time. But… how?</p></li>
+</ul>
+<p>In order to reject a code in compile-time, we need to somehow make constraints and type-level assertions. One way to do this is to use a type-list of capabilities that a XPath selector has.</p>
+<p>An example of what we produce in a call to <code>mkXPath</code>:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="fu">&gt;</span> <span class="fu">:</span>set <span class="fu">-</span><span class="dt">XTemplateHaskell</span>
+<span class="fu">&gt;</span> <span class="fu">:</span>set <span class="fu">-</span><span class="dt">XDataKinds</span>
+<span class="fu">&gt;</span> <span class="kw">import </span><span class="dt">Language.Haskell.TH</span>
+<span class="fu">&gt;</span>
+<span class="fu">&gt;</span> <span class="fu">:</span>t <span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::a[contains(text(), 'wow')]&quot;</span>)
+<span class="fu">$</span>(mkXPath <span class="st">&quot;//span/button/descendant::a[contains(text(), 'wow')]&quot;</span>)
+<span class="ot">  ::</span> <span class="dt">Selector</span>
+       <span class="st">&quot;//span/button/descendant::a[contains(text(), 'wow')]&quot;</span>
+       <span class="ch">'['</span><span class="dt">Clickable</span>, <span class="ch">'ContainsText]</span></code></pre></div>
+<p>TemplateHaskell has its own constructors for Haskell types, values, functions, instances etc. And it’s very hard to try to memorize every construction, so we simply use the repl and type:</p>
+<pre><code>&gt; runQ [e|Selector :: Selector &quot;yigit&quot;|]
+SigE
+  (ConE Test.TWebDriver.Commands.Selector)
+  (AppT (ConT Test.TWebDriver.Commands.Selector) (LitT (StrTyLit &quot;yigit&quot;)))</code></pre>
+<p>We cannot use this quasi quotation everywhere, but it still helps us understand how TemplateHaskell constructs values.</p>
+<p>And here is the definition of <code>mkXPath</code>:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">mkXPath ::</span> <span class="dt">String</span> <span class="ot">-&gt;</span> <span class="dt">Q</span> <span class="dt">Exp</span>
+mkXPath name <span class="fu">=</span> <span class="kw">do</span>
+  promotedTySig <span class="ot">&lt;-</span> toPromotedTH (generateCapabilities name)
+  pure <span class="fu">$</span>
+    <span class="dt">SigE</span>
+      (<span class="dt">ConE</span> (mkName <span class="st">&quot;Selector&quot;</span>))
+      (<span class="dt">AppT</span>
+        (<span class="dt">AppT</span>
+          (<span class="dt">ConT</span> (mkName <span class="st">&quot;Selector&quot;</span>))
+          (<span class="dt">LitT</span> (<span class="dt">StrTyLit</span> name))
+        )
+        promotedTySig
+      )
+
+<span class="ot">toPromotedTH ::</span> <span class="dt">Either</span> <span class="dt">String</span> [<span class="dt">Capability</span>] <span class="ot">-&gt;</span> <span class="dt">Q</span> <span class="dt">Type</span>
+toPromotedTH (<span class="dt">Left</span> err) <span class="fu">=</span> reportError err <span class="fu">$&gt;</span> <span class="dt">PromotedNilT</span>
+toPromotedTH (<span class="dt">Right</span> []) <span class="fu">=</span> pure <span class="dt">PromotedNilT</span>
+toPromotedTH (<span class="dt">Right</span> (cap<span class="fu">:</span>xs)) <span class="fu">=</span> <span class="kw">do</span>
+  deeper <span class="ot">&lt;-</span> toPromotedTH (<span class="dt">Right</span> xs)
+  pure <span class="fu">$</span>
+    <span class="dt">AppT</span>
+      (<span class="dt">AppT</span>
+        <span class="dt">PromotedConsT</span>
+        (<span class="dt">PromotedT</span> (mkName (show cap)))
+      )
+      deeper</code></pre></div>
+<p>So we basically create a type-level string for consuming xpath in “sending to Selenium” process, and also a list of capabilities this XPath has.</p>
+<p>After creating our qualified selector, we need to be able to find elements with it:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE DataKinds             #-}</span>
+<span class="ot">{-# LANGUAGE KindSignatures        #-}</span>
+<span class="ot">{-# LANGUAGE MultiParamTypeClasses #-}</span>
+<span class="ot">{-# LANGUAGE RankNTypes            #-}</span>
+<span class="ot">{-# LANGUAGE ScopedTypeVariables   #-}</span>
+
+<span class="kw">import qualified</span> <span class="dt">Test.WebDriver.Commands</span>    <span class="kw">as</span> <span class="dt">WDM</span>
+<span class="kw">import qualified</span> <span class="dt">Test.WebDriver.Monad</span>       <span class="kw">as</span> <span class="dt">WDM</span>
+<span class="kw">import           </span><span class="dt">GHC.TypeLits</span>               (<span class="dt">KnownSymbol</span>, <span class="dt">Symbol</span>, symbolVal)
+<span class="kw">import qualified</span> <span class="dt">Data.Text</span>                  <span class="kw">as</span> <span class="dt">T</span>
+
+findElem
+<span class="ot">  ::</span> forall name cap<span class="fu">.</span> <span class="dt">KnownSymbol</span> name
+  <span class="ot">=&gt;</span> <span class="dt">Selector</span> name cap
+  <span class="ot">-&gt;</span> <span class="dt">WDM.WD</span> (<span class="dt">Element</span> name cap)
+findElem <span class="dt">Selector</span> <span class="fu">=</span> fmap <span class="dt">Element</span>
+                  <span class="fu">$</span> WDM.findElem
+                  <span class="fu">$</span> <span class="dt">WDM.ByXPath</span>
+                  <span class="fu">$</span> T.pack
+                  <span class="fu">$</span> symbolVal (<span class="dt">Proxy</span><span class="ot"> ::</span> <span class="dt">Proxy</span> name)</code></pre></div>
+<p>The capabilities we have at type level are used by several library functions. For instance, let’s take a look at the signature of click function:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">Capability</span> <span class="fu">=</span>
+    <span class="dt">Clickable</span>
+  <span class="fu">|</span> <span class="dt">Hoverable</span>
+  <span class="fu">|</span> <span class="dt">ContainsText</span>
+  <span class="kw">deriving</span> <span class="dt">Show</span>
+
+<span class="kw">type</span> family <span class="dt">XPathNotClickableError</span> (<span class="ot">name ::</span> <span class="dt">Symbol</span>)<span class="ot"> ::</span> b <span class="kw">where</span>
+  <span class="dt">XPathNotClickableError</span> name <span class="fu">=</span>
+    <span class="dt">TypeError</span> ( <span class="ch">'Text &quot;The following XPath is not clickable: &quot;</span>
+          <span class="ch">':$$: '</span><span class="dt">Text</span> name
+    )
+
+<span class="kw">type</span> family <span class="dt">CanClick</span> (<span class="ot">name ::</span> <span class="dt">Symbol</span>) (<span class="ot">xs ::</span> [<span class="dt">Capability</span>])<span class="ot"> ::</span> <span class="dt">Constraint</span> <span class="kw">where</span>
+  <span class="dt">CanClick</span> name <span class="ch">'[] = XPathNotClickableError name</span>
+  <span class="dt">CanClick</span> _ (<span class="ch">'Clickable '</span><span class="fu">:</span> xs) <span class="fu">=</span> ()
+  <span class="dt">CanClick</span> name (x <span class="ch">': xs) = CanClick name xs</span>
+
+<span class="ot">click ::</span> forall name xs<span class="fu">.</span> <span class="dt">CanClick</span> name xs <span class="ot">=&gt;</span> <span class="dt">Element</span> name xs <span class="ot">-&gt;</span> <span class="dt">WDM.WD</span> ()
+click <span class="fu">=</span> WDM.click <span class="fu">.</span> unElement</code></pre></div>
+<p>This way, after encoding necessary capabilities in a Selector’s type, we can observe what actions can be taken with this selector thgouhgout the journey of compilation.</p>
+<p>This library is still in being developed, and not meant to be used in production yet.</p>
+<p>The purpose of this blog post is to demonstrate how we can leverage lightweight usage of TemplateHaskell to generate compile-time constraints for us via regular Haskell expressions.</p>
+<p>Cheers.</p>
+    </section>
+</article>
+
+        </main>
+
+        <footer>
+            Site proudly generated by
+            <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+        </footer>
+    </body>
+</html>
