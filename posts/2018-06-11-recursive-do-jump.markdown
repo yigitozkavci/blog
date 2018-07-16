@@ -48,8 +48,8 @@ We would end up with the program below:
 3 PUSH 10
 4 JUMPI
 5 PUSH 0xf4 # Arbitrary address for variable "a"
-6 PUSH 3
-7 PUSH 5
+6 PUSH 5
+7 PUSH 3
 8 ADD
 9 STORE
 10 JUMPDEST # If statement's body is completed
@@ -84,8 +84,8 @@ op instr =
 ifBlock :: State InstrState ()
 ifBlock = do
   op (PUSH 0xf4) -- An arbitrary address for variable a
-  op (PUSH 3)
   op (PUSH 5)
+  op (PUSH 3)
   op ADD
   op STORE
 
@@ -101,7 +101,7 @@ compute predicate = do
 main :: IO ()
 main = print $ _instrSet $ execState (compute 1) (InstrState [] 0)
 -- Output:
--- [PUSH 1,NOT,PUSH 10,JUMPI,PUSH 244,PUSH 3,PUSH 5,ADD,STORE,JUMPDEST]
+-- [PUSH 1,NOT,PUSH 10,JUMPI,PUSH 244,PUSH 5,PUSH 3,ADD,STORE,JUMPDEST]
 ```
 You may already have noticed that at instruction number 3, we've pushed 10; it's nice to directly jump to your destination, but how did we know we had to jump to PC 10?
 The problem with this solution is that we need to know that we need to push 10 into stack before we know the total cost of theif statement's body.
