@@ -150,3 +150,6 @@ This library is still in being developed, and not meant to be used in production
 The purpose of this blog post is to demonstrate how we can leverage lightweight usage of TemplateHaskell to generate compile-time constraints for us via regular Haskell expressions.
 
 Cheers.
+
+## Notes
+* Thanks to Enis Bayramoğlu for long discussions on ways of improving usability of API

@@ -153,3 +153,6 @@ op !instr =
 -- <<infinite loop>>
 ```
 So we have our infinite loop. This concludes the post.
+
+## Notes
+* Huge thanks Enis Bayramoğlu for reviewing the whole post
