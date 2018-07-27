@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8">
+        <meta http-equiv="x-ua-compatible" content="ie=edge">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Yigit's Blog - A type-safe advanced stack machine interface</title>
+        <link rel="stylesheet" href="../css/default.css" />
+        <link rel="stylesheet" href="../css/syntax.css" />
+    </head>
+    <body>
+        <header>
+            <div class="logo">
+                <a href="../">Yiğit Özkavcı</a>
+            </div>
+            <nav>
+                <a href="../">Home</a>
+                <a href="../about.html">About</a>
+                <a href="../contact.html">Contact</a>
+                <a href="../archive.html">Archive</a>
+            </nav>
+        </header>
+
+        <main role="main">
+            <h1>A type-safe advanced stack machine interface</h1>
+            <article>
+    <section class="header">
+        Posted on July 26, 2018
+        
+            by Yiğit Özkavcı
+        
+    </section>
+    <section>
+        <h1 id="introduction">Introduction</h1>
+<p>While developing <a href="https://github.com/cenary-lang/cenary/">Cenary</a>, a programming language for writing smart contracts, there were many places requiring an API for imperative stack machine procedures.</p>
+<p>While generating code for procedural operations (say, a loop or branching), we need to somehow tame its imperative nature and bring safety, since we are equipped with Haskell.</p>
+<p>In this post, we are going to achieve such behavior by introducing useful tools such as <strong>indexed monoids (categories)</strong>, <strong>RebindableSyntax</strong>, <strong>TypeApplications</strong> and so on.</p>
+<h1 id="problem">Problem</h1>
+<p>Let’s look at an example:</p>
+<div class="sourceCode"><pre class="sourceCode c"><code class="sourceCode c">PUSH32 <span class="bn">0x3f</span>
+PUSH32 <span class="bn">0x22</span>
+MSTORE8 <span class="co">// Store the value 0x3f at memory address 0x22</span></code></pre></div>
+<p>Imagine writing a code generator for this, it would look like:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">save ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Procedure</span>
+save addr val <span class="fu">=</span> <span class="kw">do</span>
+  push32 val
+  push32 addr
+  mstore</code></pre></div>
+<p>This may look fine at first place, but both <code>val</code> and <code>addr</code> indicate that even though they are both <code>Int</code>s, actually they are quite different in meaning. We mean a pointer to an integer while saying <code>addr</code>, and a value integer for <code>val</code>.</p>
+<p>Let’s look at another example:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">broken ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Procedure</span>
+broken val1 val2 <span class="fu">=</span> <span class="kw">do</span>
+  push32 val1
+  push32 val2
+  pop
+  pop
+  pop</code></pre></div>
+<p>Even by just looking at it, you saw the problem: we are making compiler allow us to pop from an empty stack. We can catch the error by using monads like Maybe or Either, but we want this kind of code not to compile at all.</p>
+<h1 id="motivation">Motivation</h1>
+<p>Eventually, in this post, we are aiming to achieve an api that would allow us a usage as such:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">main ::</span> <span class="dt">IO</span> ()
+main <span class="fu">=</span>
+  generate <span class="fu">$</span> <span class="kw">do</span>
+    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="dv">1</span> <span class="co">-- Push address to stack</span>
+    push <span class="fu">@</span><span class="ch">'IntVal 3    -- Push integer to stack</span>
+    push <span class="fu">@</span><span class="ch">'IntVal 5    -- Push integer to stack</span>
+    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="dv">1</span> <span class="co">-- Push address to stack</span>
+    mstore             <span class="co">-- Pop 2 items from stack</span>
+    pop                <span class="co">-- Pop 1 items from stack</span>
+    load               <span class="co">-- Pop 1 item from stack and push 1</span>
+    pop                <span class="co">-- Pop 1 items from stack</span>
+    <span class="kw">where</span>
+      (<span class="fu">&gt;&gt;</span>) <span class="fu">=</span> (<span class="fu">Cat.&gt;&gt;&gt;</span>)</code></pre></div>
+<p>Some assurances going on behind-the-scenes:</p>
+<ul>
+<li><p>We only allow <code>mstore</code> in generation of the code if top two items on the stack is in correct format (<code>s[0]</code> is an address, and <code>s[1]</code> is a value).</p></li>
+<li><p>We are, obviously not allowing <code>pop</code>ping from an empty stack.</p></li>
+<li><p>We only allow <code>load</code> instruction if <code>s[0]</code> (ie. the top element in stack) is a pointer, and we are putting its value to the stack. So a <code>IntPointer 1</code> is replaced by <code>IntVal 1</code> after load instruction is executed.</p></li>
+</ul>
+<p>These constraints are just the tip of the iceberg. Once we have the API, we can introduce many, possibly more sophisticated checks.</p>
+<h1 id="implementation">Implementation</h1>
+<h2 id="tools-required">Tools Required</h2>
+<p>We begin with preparing the tools we are going to need.</p>
+<p>First things first, we are going to need these extensions:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE InstanceSigs #-}</span>
+<span class="ot">{-# LANGUAGE KindSignatures #-}</span>
+<span class="ot">{-# LANGUAGE TypeApplications #-}</span>
+<span class="ot">{-# LANGUAGE RebindableSyntax #-}</span>
+<span class="ot">{-# LANGUAGE TemplateHaskell #-}</span>
+<span class="ot">{-# LANGUAGE RankNTypes #-}</span></code></pre></div>
+<p>A couple of EVM instructions. Even though it’s not needed to follow this post, if you are interested, there are <strong>many</strong> of them documented in the <a href="http://yellowpaper.io/">yellowpaper</a></p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">EvmInstruction</span> <span class="fu">=</span>
+    <span class="dt">PUSH</span> <span class="dt">Int</span>
+  <span class="fu">|</span> <span class="dt">POP</span>
+  <span class="fu">|</span> <span class="dt">LOAD</span>
+  <span class="fu">|</span> <span class="dt">MSTORE8</span>
+  <span class="kw">deriving</span> <span class="dt">Show</span></code></pre></div>
+<p>And the tricky part. The type <code>Instr</code> represents an instruction in our API.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">{-</span>
+<span class="co">   Meant to be used as a kind, so a type like 'Address ('Address 'IntVal)</span>
+<span class="co">   means a pointer to a pointer to an integer.</span>
+<span class="co">-}</span>
+<span class="kw">data</span> <span class="dt">ValueTy</span> <span class="fu">=</span> <span class="dt">IntVal</span>
+            <span class="fu">|</span> <span class="dt">Address</span> <span class="dt">ValueTy</span>
+            <span class="fu">|</span> <span class="dt">CharVal</span>
+
+<span class="co">{-</span>
+<span class="co">   `xs` is the stack before, and `ys` is after.</span>
+<span class="co">   And in value level, it's just a modifier for stack full of `EvmInstruction`s.</span>
+<span class="co">-}</span>
+<span class="kw">newtype</span> <span class="dt">Instr</span> (<span class="ot">xs ::</span> [<span class="dt">ValueTy</span>]) (<span class="ot">ys ::</span> [<span class="dt">ValueTy</span>]) <span class="fu">=</span> <span class="dt">Instr</span>
+  {<span class="ot"> _unInstr ::</span> [<span class="dt">EvmInstruction</span>] <span class="ot">-&gt;</span> [<span class="dt">EvmInstruction</span>]
+  }
+
+<span class="co">{-</span>
+<span class="co">  And this is the essence to our API. We are propagating our</span>
+<span class="co">  stack state at type level by binding instructions, given</span>
+<span class="co">  that they tell us what kind of modification they do.</span>
+<span class="co">-}</span>
+<span class="kw">instance</span> <span class="dt">Cat.Category</span> <span class="dt">Instr</span> <span class="kw">where</span>
+
+<span class="ot">  (.) ::</span> <span class="dt">Instr</span> b c <span class="ot">-&gt;</span> <span class="dt">Instr</span> a b <span class="ot">-&gt;</span> <span class="dt">Instr</span> a c
+  <span class="dt">Instr</span> f1 <span class="fu">.</span> <span class="dt">Instr</span> f2 <span class="fu">=</span> <span class="dt">Instr</span> (f1 <span class="fu">.</span> f2)
+
+<span class="ot">  id ::</span> <span class="dt">Instr</span> a a
+  id <span class="fu">=</span> <span class="dt">Instr</span> id
+
+  <span class="co">-- Laws</span>
+  <span class="co">-- @</span>
+  <span class="co">-- Instr f . id = Instr f</span>
+  <span class="co">--</span>
+  <span class="co">-- Proof:</span>
+  <span class="co">-- Instr f . id = Instr f</span>
+  <span class="co">-- Instr f . Instr id = Instr f</span>
+  <span class="co">-- Instr (f . id) = Instr f</span>
+  <span class="co">-- Instr f = Instr f</span>
+  <span class="co">-- Qed</span>
+  <span class="co">-- @</span></code></pre></div>
+<h2 id="adding-instructions">Adding Instructions</h2>
+<p>And finally, we are ready to describe our instructions. We basically encode instructions in two ways: one in type, and one in value.</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">addInstr ::</span> <span class="dt">EvmInstruction</span> <span class="ot">-&gt;</span> <span class="dt">Instr</span> a b
+addInstr i <span class="fu">=</span> <span class="dt">Instr</span> <span class="fu">$</span> (i<span class="fu">:</span>)
+
+<span class="ot">push ::</span> forall elemTy xs<span class="fu">.</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Instr</span> xs (elemTy <span class="ch">': xs)</span>
+push v <span class="fu">=</span> addInstr (<span class="dt">PUSH</span> v)
+
+<span class="ot">pop ::</span> <span class="dt">Instr</span> (elemTy <span class="ch">': xs) xs</span>
+pop <span class="fu">=</span> addInstr <span class="dt">POP</span>
+
+<span class="ot">load ::</span> <span class="dt">Instr</span> (<span class="ch">'Address elemTy '</span><span class="fu">:</span> xs) (elemTy <span class="ch">': xs)</span>
+load <span class="fu">=</span> addInstr <span class="dt">LOAD</span>
+
+<span class="ot">mstore ::</span> <span class="dt">Instr</span> (<span class="ch">'Address addr '</span><span class="fu">:</span> valueTy <span class="ch">': xs) xs</span>
+mstore <span class="fu">=</span> addInstr <span class="dt">MSTORE8</span></code></pre></div>
+<h2 id="execution">Execution</h2>
+<p>And finally, we are ready to write our code generator:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">generate ::</span> <span class="dt">Instr</span> <span class="ch">'[] xs -&gt; IO ()</span>
+generate <span class="fu">=</span> print <span class="fu">.</span> (<span class="fu">$</span> []) <span class="fu">.</span> _unInstr
+
+<span class="kw">type</span> <span class="dt">IntPointer</span> <span class="fu">=</span> <span class="ch">'Address '</span><span class="dt">IntVal</span>
+
+<span class="ot">main ::</span> <span class="dt">IO</span> ()
+main <span class="fu">=</span>
+  generate <span class="fu">$</span> <span class="kw">do</span>
+    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="bn">0x16</span>
+    push <span class="fu">@</span><span class="ch">'IntVal 3</span>
+    push <span class="fu">@</span><span class="ch">'IntVal 5</span>
+    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="bn">0x24</span>
+    mstore
+    pop
+    load
+    pop
+    <span class="kw">where</span>
+      (<span class="fu">&gt;&gt;</span>) <span class="fu">=</span> (<span class="fu">Cat.&gt;&gt;&gt;</span>)</code></pre></div>
+<p>Notice that we are telling push method what type to use for given integer when it’s pushed into the stack, we are making use of <code>TypeApplications</code> there.</p>
+<h1 id="analysis">Analysis</h1>
+<p>The following signature for <code>load</code> captures all the behavior of a <code>load</code> instruction:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">load ::</span> <span class="dt">Instr</span> (<span class="ch">'Address elemTy '</span><span class="fu">:</span> xs) (elemTy <span class="ch">': xs)</span></code></pre></div>
+<p>Signature of the <code>load</code> instruction has something special as well, thanks to parametric polymorphism: whichever type you have in the pointer at the top of the stack, you have the value of that pointer. So if you have a <code>Address (Address Int)</code>, you get back an <code>Address Int</code> and this is powerful.</p>
+<p>Now let’s look at the <code>mstore</code> generator:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">mstore ::</span> <span class="dt">Instr</span> (<span class="ch">'Address addr '</span><span class="fu">:</span> valueTy <span class="ch">': xs) xs</span></code></pre></div>
+<p>It’s pattern matching on the state of the stack, so that it both ensures that there are at least 2 items, and type of the items are suitable for mstore instruction.</p>
+<h1 id="conclusion">Conclusion</h1>
+<p>There are many possible checks that can be done in compile time, and we are able to do it in an intuitive way.</p>
+    </section>
+</article>
+
+        </main>
+
+        <footer>
+            Site proudly generated by
+            <a href="http://jaspervdj.be/hakyll">Hakyll</a>
+        </footer>
+    </body>
+</html>
