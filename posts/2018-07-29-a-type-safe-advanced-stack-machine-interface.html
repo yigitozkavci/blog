@@ -25,7 +25,7 @@
             <h1>A type-safe advanced stack machine interface</h1>
             <article>
     <section class="header">
-        Posted on July 26, 2018
+        Posted on July 29, 2018
         
             by Yiğit Özkavcı
         
@@ -33,8 +33,9 @@
     <section>
         <h1 id="introduction">Introduction</h1>
 <p>While developing <a href="https://github.com/cenary-lang/cenary/">Cenary</a>, a programming language for writing smart contracts, there were many places requiring an API for imperative stack machine procedures.</p>
-<p>While generating code for procedural operations (say, a loop or branching), we need to somehow tame its imperative nature and bring safety, since we are equipped with Haskell.</p>
-<p>In this post, we are going to achieve such behavior by introducing useful tools such as <strong>indexed monoids (categories)</strong>, <strong>RebindableSyntax</strong>, <strong>TypeApplications</strong> and so on.</p>
+<p>While generating code for procedural operations (say, a loop or branching), we need to somehow tame its imperative nature and bring safety; we are able to do it since we are equipped with Haskell.</p>
+<p>In this post, we are going to achieve such behavior by introducing useful tools such as <strong>indexed monoids (or categories)</strong>, <strong>RebindableSyntax</strong>, <strong>TypeApplications</strong> and many others.</p>
+<p>(Note: you are encouraged to copy-paste the code in the section “Implementation” and modify things as we go through this post, don’t worry, it compiles just fine).</p>
 <h1 id="problem">Problem</h1>
 <p>Let’s look at an example:</p>
 <div class="sourceCode"><pre class="sourceCode c"><code class="sourceCode c">PUSH32 <span class="bn">0x3f</span>
@@ -46,7 +47,7 @@ save addr val <span class="fu">=</span> <span class="kw">do</span>
   push32 val
   push32 addr
   mstore</code></pre></div>
-<p>This may look fine at first place, but both <code>val</code> and <code>addr</code> indicate that even though they are both <code>Int</code>s, actually they are quite different in meaning. We mean a pointer to an integer while saying <code>addr</code>, and a value integer for <code>val</code>.</p>
+<p>This may look fine at first place, but both <code>val</code> and <code>addr</code> indicate that even though they are both <code>Int</code>s, actually they are quite different in meaning. We mean the address of an integer while saying <code>addr</code>, and a value integer for <code>val</code>.</p>
 <p>Let’s look at another example:</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">broken ::</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Int</span> <span class="ot">-&gt;</span> <span class="dt">Procedure</span>
 broken val1 val2 <span class="fu">=</span> <span class="kw">do</span>
@@ -55,39 +56,45 @@ broken val1 val2 <span class="fu">=</span> <span class="kw">do</span>
   pop
   pop
   pop</code></pre></div>
-<p>Even by just looking at it, you saw the problem: we are making compiler allow us to pop from an empty stack. We can catch the error by using monads like Maybe or Either, but we want this kind of code not to compile at all.</p>
+<p>Even just by looking at it, you saw the problem: we are making compiler allow us to pop from an empty stack. We can catch error(s) by using applicatives like Maybe or Either, but we want this kind of code not to compile at all.</p>
 <h1 id="motivation">Motivation</h1>
-<p>Eventually, in this post, we are aiming to achieve an api that would allow us a usage as such:</p>
+<p>Eventually, in this post, we are aiming to achieve an API that would allow us a usage as such:</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">main ::</span> <span class="dt">IO</span> ()
 main <span class="fu">=</span>
   generate <span class="fu">$</span> <span class="kw">do</span>
-    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="dv">1</span> <span class="co">-- Push address to stack</span>
-    push <span class="fu">@</span><span class="ch">'IntVal 3    -- Push integer to stack</span>
-    push <span class="fu">@</span><span class="ch">'IntVal 5    -- Push integer to stack</span>
-    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="dv">1</span> <span class="co">-- Push address to stack</span>
+    push <span class="fu">@</span><span class="dt">IntAddress</span> <span class="dv">1</span> <span class="co">-- Push an address to stack</span>
+    push <span class="fu">@</span><span class="ch">'IntVal 3    -- Push an integer to stack</span>
+    push <span class="fu">@</span><span class="ch">'IntVal 5    -- Push an integer to stack</span>
+    push <span class="fu">@</span><span class="dt">IntAddress</span> <span class="dv">1</span> <span class="co">-- Push an address to stack</span>
     mstore             <span class="co">-- Pop 2 items from stack</span>
-    pop                <span class="co">-- Pop 1 items from stack</span>
-    load               <span class="co">-- Pop 1 item from stack and push 1</span>
-    pop                <span class="co">-- Pop 1 items from stack</span>
+    pop                <span class="co">-- Pop 1 item from stack</span>
+    load               <span class="co">-- Pop 1 item from stack and push 1 item</span>
+    pop                <span class="co">-- Pop 1 item from stack</span>
     <span class="kw">where</span>
       (<span class="fu">&gt;&gt;</span>) <span class="fu">=</span> (<span class="fu">Cat.&gt;&gt;&gt;</span>)</code></pre></div>
 <p>Some assurances going on behind-the-scenes:</p>
 <ul>
 <li><p>We only allow <code>mstore</code> in generation of the code if top two items on the stack is in correct format (<code>s[0]</code> is an address, and <code>s[1]</code> is a value).</p></li>
 <li><p>We are, obviously not allowing <code>pop</code>ping from an empty stack.</p></li>
-<li><p>We only allow <code>load</code> instruction if <code>s[0]</code> (ie. the top element in stack) is a pointer, and we are putting its value to the stack. So a <code>IntPointer 1</code> is replaced by <code>IntVal 1</code> after load instruction is executed.</p></li>
+<li><p>We only allow <code>load</code> instruction if <code>s[0]</code> (ie. the top element in stack) is an address, and we are putting its value to the stack. So a <code>IntAddress 1</code> is replaced by <code>IntVal 1</code> after load instruction is executed.</p></li>
 </ul>
 <p>These constraints are just the tip of the iceberg. Once we have the API, we can introduce many, possibly more sophisticated checks.</p>
 <h1 id="implementation">Implementation</h1>
 <h2 id="tools-required">Tools Required</h2>
 <p>We begin with preparing the tools we are going to need.</p>
 <p>First things first, we are going to need these extensions:</p>
-<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE InstanceSigs #-}</span>
-<span class="ot">{-# LANGUAGE KindSignatures #-}</span>
-<span class="ot">{-# LANGUAGE TypeApplications #-}</span>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">{-# LANGUAGE DataKinds        #-}</span>
+<span class="ot">{-# LANGUAGE InstanceSigs     #-}</span>
+<span class="ot">{-# LANGUAGE KindSignatures   #-}</span>
+<span class="ot">{-# LANGUAGE RankNTypes       #-}</span>
 <span class="ot">{-# LANGUAGE RebindableSyntax #-}</span>
-<span class="ot">{-# LANGUAGE TemplateHaskell #-}</span>
-<span class="ot">{-# LANGUAGE RankNTypes #-}</span></code></pre></div>
+<span class="ot">{-# LANGUAGE TemplateHaskell  #-}</span>
+<span class="ot">{-# LANGUAGE TypeApplications #-}</span>
+<span class="ot">{-# LANGUAGE TypeOperators    #-}</span>
+
+<span class="kw">import qualified</span> <span class="dt">Control.Category</span> <span class="kw">as</span> <span class="dt">Cat</span>
+<span class="kw">import           </span><span class="dt">Prelude</span>          (<span class="dt">IO</span>, <span class="dt">Int</span>, <span class="dt">Show</span>, fromInteger, id, print,
+                                   return, (<span class="fu">$</span>), (<span class="fu">.</span>))</code></pre></div>
 <p>A couple of EVM instructions. Even though it’s not needed to follow this post, if you are interested, there are <strong>many</strong> of them documented in the <a href="http://yellowpaper.io/">yellowpaper</a></p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="kw">data</span> <span class="dt">EvmInstruction</span> <span class="fu">=</span>
     <span class="dt">PUSH</span> <span class="dt">Int</span>
@@ -98,7 +105,7 @@ main <span class="fu">=</span>
 <p>And the tricky part. The type <code>Instr</code> represents an instruction in our API.</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">{-</span>
 <span class="co">   Meant to be used as a kind, so a type like 'Address ('Address 'IntVal)</span>
-<span class="co">   means a pointer to a pointer to an integer.</span>
+<span class="co">   means the address of the address of an integer</span>
 <span class="co">-}</span>
 <span class="kw">data</span> <span class="dt">ValueTy</span> <span class="fu">=</span> <span class="dt">IntVal</span>
             <span class="fu">|</span> <span class="dt">Address</span> <span class="dt">ValueTy</span>
@@ -120,22 +127,10 @@ main <span class="fu">=</span>
 <span class="kw">instance</span> <span class="dt">Cat.Category</span> <span class="dt">Instr</span> <span class="kw">where</span>
 
 <span class="ot">  (.) ::</span> <span class="dt">Instr</span> b c <span class="ot">-&gt;</span> <span class="dt">Instr</span> a b <span class="ot">-&gt;</span> <span class="dt">Instr</span> a c
-  <span class="dt">Instr</span> f1 <span class="fu">.</span> <span class="dt">Instr</span> f2 <span class="fu">=</span> <span class="dt">Instr</span> (f1 <span class="fu">.</span> f2)
+  <span class="dt">Instr</span> f1 <span class="fu">.</span> <span class="dt">Instr</span> f2 <span class="fu">=</span> <span class="dt">Instr</span> (f2 <span class="fu">.</span> f1)
 
 <span class="ot">  id ::</span> <span class="dt">Instr</span> a a
-  id <span class="fu">=</span> <span class="dt">Instr</span> id
-
-  <span class="co">-- Laws</span>
-  <span class="co">-- @</span>
-  <span class="co">-- Instr f . id = Instr f</span>
-  <span class="co">--</span>
-  <span class="co">-- Proof:</span>
-  <span class="co">-- Instr f . id = Instr f</span>
-  <span class="co">-- Instr f . Instr id = Instr f</span>
-  <span class="co">-- Instr (f . id) = Instr f</span>
-  <span class="co">-- Instr f = Instr f</span>
-  <span class="co">-- Qed</span>
-  <span class="co">-- @</span></code></pre></div>
+  id <span class="fu">=</span> <span class="dt">Instr</span> id</code></pre></div>
 <h2 id="adding-instructions">Adding Instructions</h2>
 <p>And finally, we are ready to describe our instructions. We basically encode instructions in two ways: one in type, and one in value.</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">addInstr ::</span> <span class="dt">EvmInstruction</span> <span class="ot">-&gt;</span> <span class="dt">Instr</span> a b
@@ -157,15 +152,15 @@ mstore <span class="fu">=</span> addInstr <span class="dt">MSTORE8</span></code>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">generate ::</span> <span class="dt">Instr</span> <span class="ch">'[] xs -&gt; IO ()</span>
 generate <span class="fu">=</span> print <span class="fu">.</span> (<span class="fu">$</span> []) <span class="fu">.</span> _unInstr
 
-<span class="kw">type</span> <span class="dt">IntPointer</span> <span class="fu">=</span> <span class="ch">'Address '</span><span class="dt">IntVal</span>
+<span class="kw">type</span> <span class="dt">IntAddress</span> <span class="fu">=</span> <span class="ch">'Address '</span><span class="dt">IntVal</span>
 
 <span class="ot">main ::</span> <span class="dt">IO</span> ()
 main <span class="fu">=</span>
   generate <span class="fu">$</span> <span class="kw">do</span>
-    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="bn">0x16</span>
+    push <span class="fu">@</span><span class="dt">IntAddress</span> <span class="bn">0x16</span>
     push <span class="fu">@</span><span class="ch">'IntVal 3</span>
     push <span class="fu">@</span><span class="ch">'IntVal 5</span>
-    push <span class="fu">@</span><span class="dt">IntPointer</span> <span class="bn">0x24</span>
+    push <span class="fu">@</span><span class="dt">IntAddress</span> <span class="bn">0x24</span>
     mstore
     pop
     load
@@ -176,12 +171,55 @@ main <span class="fu">=</span>
 <h1 id="analysis">Analysis</h1>
 <p>The following signature for <code>load</code> captures all the behavior of a <code>load</code> instruction:</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">load ::</span> <span class="dt">Instr</span> (<span class="ch">'Address elemTy '</span><span class="fu">:</span> xs) (elemTy <span class="ch">': xs)</span></code></pre></div>
-<p>Signature of the <code>load</code> instruction has something special as well, thanks to parametric polymorphism: whichever type you have in the pointer at the top of the stack, you have the value of that pointer. So if you have a <code>Address (Address Int)</code>, you get back an <code>Address Int</code> and this is powerful.</p>
+<p>Signature of the <code>load</code> instruction has something special as well, thanks to parametric polymorphism: whichever type you have in the address at the top of the stack, you have the value of that address. So if you have an <code>Address (Address Int)</code>, you get back an <code>Address Int</code> and this is powerful.</p>
 <p>Now let’s look at the <code>mstore</code> generator:</p>
 <div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="ot">mstore ::</span> <span class="dt">Instr</span> (<span class="ch">'Address addr '</span><span class="fu">:</span> valueTy <span class="ch">': xs) xs</span></code></pre></div>
 <p>It’s pattern matching on the state of the stack, so that it both ensures that there are at least 2 items, and type of the items are suitable for mstore instruction.</p>
+<h2 id="composition">Composition</h2>
+<p>In this manner, we are able to compose small pieces of procedures of which behaviors are indicated with their signatures. A real world example:</p>
+<p>SHA3 instruction takes two values: an address and a span indicated by an integer value. So with values [address, 0x40], it takes the SHA3 hash of the value in memory area (address, address + 0x40). But we often have values, not addresses in stack, so we need an intermediate function that does the work of allocating that value along with taking SHA3 hash of it. First, we need a couple more functions for Evm API:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- | Duplicates top value of stack</span>
+<span class="kw">data</span> <span class="dt">EvmInstruction</span> <span class="fu">=</span> <span class="fu">...</span>
+                    <span class="fu">|</span> <span class="dt">DUP1</span>
+                    <span class="fu">|</span> <span class="dt">DUP2</span>
+                    <span class="fu">|</span> <span class="dt">SWAP1</span>
+                    <span class="fu">|</span> <span class="dt">SHA3</span>
+
+<span class="kw">data</span> <span class="dt">ValueTy</span> <span class="fu">=</span> <span class="fu">...</span>
+             <span class="fu">|</span> <span class="dt">SHA3Hash</span>
+
+<span class="co">-- | Duplicates top value of stack</span>
+<span class="ot">dup1 ::</span> <span class="dt">Instr</span> (val <span class="ch">': xs) (val '</span><span class="fu">:</span> val <span class="ch">': xs)</span>
+dup1 <span class="fu">=</span> addInstr <span class="dt">DUP1</span>
+
+<span class="co">-- | Duplicates second from top value of stack</span>
+<span class="ot">dup2 ::</span> <span class="dt">Instr</span> (x <span class="ch">': y '</span><span class="fu">:</span> xs) (y <span class="ch">': x '</span><span class="fu">:</span> y <span class="ch">': xs)</span>
+dup2 <span class="fu">=</span> addInstr <span class="dt">DUP2</span>
+
+<span class="co">-- | Swaps the top 2 values in stack</span>
+<span class="ot">swap1 ::</span> <span class="dt">Instr</span> (x <span class="ch">': y '</span><span class="fu">:</span> xs) (y <span class="ch">': x '</span><span class="fu">:</span> xs)
+swap1 <span class="fu">=</span> addInstr <span class="dt">SWAP1</span>
+
+<span class="co">-- | Takes tha SHA3 hash of the value in address (s[0]...(s[0] + s[1]))</span>
+<span class="ot">sha3 ::</span> <span class="dt">Instr</span> (<span class="dt">IntAddress</span> <span class="ch">': '</span><span class="dt">IntVal</span> <span class="ch">': xs) ('</span><span class="dt">SHA3Hash</span> <span class="ch">': xs)</span>
+sha3 <span class="fu">=</span> addInstr <span class="dt">SHA3</span></code></pre></div>
+<p>And then, we write our utility functions using these above:</p>
+<div class="sourceCode"><pre class="sourceCode haskell"><code class="sourceCode haskell"><span class="co">-- | Given a value in stack, takes SHA3 hash of it.</span>
+<span class="ot">sha3value ::</span> <span class="dt">Instr</span> (<span class="ch">'IntVal '</span><span class="fu">:</span> xs) (<span class="ch">'SHA3Hash '</span><span class="fu">:</span> xs)
+sha3value <span class="fu">=</span> <span class="kw">do</span>
+  <span class="kw">let</span> allocatedAddr <span class="fu">=</span> <span class="bn">0x1afe</span>
+  push <span class="fu">@</span><span class="dt">IntAddress</span> allocatedAddr
+  swap1
+  dup2
+  mstore
+  push <span class="fu">@</span><span class="ch">'IntVal 0x20</span>
+  swap1
+  sha3
+  <span class="kw">where</span>
+    (<span class="fu">&gt;&gt;</span>) <span class="fu">=</span> (<span class="fu">Cat.&gt;&gt;&gt;</span>)</code></pre></div>
 <h1 id="conclusion">Conclusion</h1>
-<p>There are many possible checks that can be done in compile time, and we are able to do it in an intuitive way.</p>
+<p>Initially when I first started writing this API and procedures, I felt urge to write comprehensive tests to be sure that those long procedures are doing what they should be doing. Even one line missing can be a cause of bugs which are hard to detect.</p>
+<p>It’s important to write tests to keep runtime behavior of programs in check, but in these kind of problems, creating proven small pieces and composing them together should be the way to go since you have very small space for errors (instruction primitives like <code>dup1</code>, <code>swap1</code>, <code>sha3</code> are the error-prone components in this program’s case).</p>
     </section>
 </article>
 
